@@ -52,15 +52,6 @@ If a task is likely to take more than a few minutes:
 
 Avoid long periods without visible progress.
 
----
-
-# Git
-
-Never commit automatically.
-
-Never push automatically.
-
-Always let me review code first.
 
 ---
 
