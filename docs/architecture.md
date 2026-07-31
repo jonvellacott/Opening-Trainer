@@ -89,6 +89,7 @@ storage/               Interface + implementation. Domain never imports this.
 - **Session score:** ephemeral only, resets on reload. A rep counts as correct only if every move was right on the first attempt; mistakes are tracked separately.
 - **Multiple prepared lines on your side:** all accepted; the move you play selects the branch.
 - **Opponent branch selection:** uniform random among the study's branches at that node.
+- **Chapter selection:** since chapters are independent trees with no transposition-merging, a repertoire with multiple chapters that share an opening (e.g. two White chapters both starting 1.d4) can't offer that divergence as a live in-tree choice. Each rep starts by uniformly randomly picking one chapter, before normal per-node turn logic begins — functionally the same mechanism as opponent branch selection, just applied once at the chapter level regardless of which side's move the chapters actually diverge on.
 - **Colour assignment:** per chapter, defaulting from the study, set in config — never inferred from PGN.
 - **Transpositions:** not merged in v1. Nodes are indexed by FEN so this can be added later without a data migration.
 - **Repertoire mutation:** never — the app is strictly read-only against Lichess Studies.
