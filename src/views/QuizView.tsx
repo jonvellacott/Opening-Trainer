@@ -1,10 +1,15 @@
-import { useEffect, useReducer, useState } from 'react'
+import { useEffect, useMemo, useReducer, useState } from 'react'
 import { Chess } from 'chess.js'
 import { Chessboard } from 'react-chessboard'
 import type { PieceDropHandlerArgs } from 'react-chessboard'
 import { quizReducer } from '../domain/quiz'
 import type { QuizState } from '../domain/quiz'
-import { findMatchingChild, getChildren, nextMoveColor } from '../domain/repertoire'
+import {
+  findMatchingChild,
+  getChildren,
+  groupAndMergeChapters,
+  nextMoveColor,
+} from '../domain/repertoire'
 import type { Color, Repertoire } from '../domain/repertoire'
 import { useRepertoireLoader } from './useRepertoireLoader'
 
@@ -27,7 +32,15 @@ function initialQuizState(repertoire: Repertoire): QuizState {
 }
 
 function QuizSession({ repertoire }: { repertoire: Repertoire }) {
-  const [state, dispatch] = useReducer(quizReducer, repertoire, initialQuizState)
+  // Chapters that share a starting position and colour are merged into one
+  // tree, so a branch point on the training side (e.g. two White chapters
+  // both starting 1.d4) is a choice you make by playing a move, not a
+  // pre-selection the app makes for you.
+  const quizRepertoire = useMemo(
+    () => ({ ...repertoire, chapters: groupAndMergeChapters(repertoire.chapters) }),
+    [repertoire],
+  )
+  const [state, dispatch] = useReducer(quizReducer, quizRepertoire, initialQuizState)
   const { chapter, currentNodeId, sessionStats } = state
 
   const position = currentNodeId ? chapter.nodes[currentNodeId].fen : chapter.startingFen
@@ -40,7 +53,7 @@ function QuizSession({ repertoire }: { repertoire: Repertoire }) {
   useEffect(() => {
     if (isRepComplete) {
       const timer = setTimeout(() => {
-        dispatch({ type: 'START_REP', chapterIndex: randomIndex(repertoire.chapters.length) })
+        dispatch({ type: 'START_REP', chapterIndex: randomIndex(state.repertoire.chapters.length) })
       }, REP_COMPLETE_DELAY_MS)
       return () => clearTimeout(timer)
     }
@@ -52,7 +65,7 @@ function QuizSession({ repertoire }: { repertoire: Repertoire }) {
       }, AUTO_MOVE_DELAY_MS)
       return () => clearTimeout(timer)
     }
-  }, [chapter, currentNodeId, isRepComplete, isTraineesTurn, repertoire.chapters.length])
+  }, [chapter, currentNodeId, isRepComplete, isTraineesTurn, state.repertoire.chapters.length])
 
   function onPieceDrop({ sourceSquare, targetSquare }: PieceDropHandlerArgs): boolean {
     if (!isTraineesTurn || !targetSquare) return false
