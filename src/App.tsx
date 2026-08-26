@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { SignInView } from './auth/SignInView'
+import { useFamily } from './auth/useFamily'
 import { useSession } from './auth/useSession'
 import { supabase } from './lib/supabase'
 import { DebugImportView } from './views/DebugImportView'
@@ -10,9 +11,19 @@ type View = 'quiz' | 'debug'
 function App() {
   const [view, setView] = useState<View>('quiz')
   const { session, loading } = useSession()
+  const { loading: familyLoading, error: familyError } = useFamily(session)
 
   if (loading) return null
   if (!session) return <SignInView />
+
+  if (familyLoading) return null
+  if (familyError) {
+    return (
+      <div style={{ padding: '1rem', maxWidth: 480, margin: '2rem auto' }}>
+        <p style={{ color: 'crimson' }}>Couldn't set up your family: {familyError}</p>
+      </div>
+    )
+  }
 
   return (
     <div>
