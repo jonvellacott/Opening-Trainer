@@ -27,3 +27,14 @@ export function applySanMove(fen: string, san: string): AppliedMove | null {
     return null
   }
 }
+
+/**
+ * Strips the halfmove/fullmove clocks from a FEN, since they're irrelevant
+ * to position identity for repertoire purposes and would otherwise stop
+ * transpositions (or the same position reached via re-import) from sharing
+ * a node.
+ */
+export function normalizeFen(fen: string): string {
+  const [placement, side, castling, enPassant] = fen.split(' ')
+  return `${placement} ${side} ${castling} ${enPassant} 0 1`
+}

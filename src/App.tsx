@@ -3,15 +3,16 @@ import { SignInView } from './auth/SignInView'
 import { useFamily } from './auth/useFamily'
 import { useSession } from './auth/useSession'
 import { supabase } from './lib/supabase'
+import { BuildView } from './views/BuildView'
 import { DebugImportView } from './views/DebugImportView'
 import { QuizView } from './views/QuizView'
 
-type View = 'quiz' | 'debug'
+type View = 'quiz' | 'build' | 'debug'
 
 function App() {
   const [view, setView] = useState<View>('quiz')
   const { session, loading } = useSession()
-  const { loading: familyLoading, error: familyError } = useFamily(session)
+  const { familyId, loading: familyLoading, error: familyError } = useFamily(session)
 
   if (loading) return null
   if (!session) return <SignInView />
@@ -39,6 +40,9 @@ function App() {
         <button type="button" onClick={() => setView('quiz')} disabled={view === 'quiz'}>
           Quiz
         </button>
+        <button type="button" onClick={() => setView('build')} disabled={view === 'build'}>
+          Build
+        </button>
         <button type="button" onClick={() => setView('debug')} disabled={view === 'debug'}>
           Debug tree
         </button>
@@ -49,7 +53,9 @@ function App() {
           Sign out
         </button>
       </nav>
-      {view === 'quiz' ? <QuizView /> : <DebugImportView />}
+      {view === 'quiz' && <QuizView />}
+      {view === 'build' && familyId && <BuildView familyId={familyId} userId={session.user.id} />}
+      {view === 'debug' && <DebugImportView />}
     </div>
   )
 }
