@@ -6,9 +6,14 @@ export function useFamily(session: Session | null) {
   const [familyId, setFamilyId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // Supabase issues a new session object on every token refresh (including
+  // ones triggered just by the tab regaining focus), even for the same
+  // signed-in user. Keying off user id instead of the session object itself
+  // means those refreshes don't re-trigger this effect and tear the app down.
+  const userId = session?.user.id ?? null
 
   useEffect(() => {
-    if (!session) {
+    if (!userId) {
       setFamilyId(null)
       setLoading(false)
       return
@@ -36,7 +41,7 @@ export function useFamily(session: Session | null) {
     return () => {
       cancelled = true
     }
-  }, [session])
+  }, [userId])
 
   return { familyId, loading, error }
 }

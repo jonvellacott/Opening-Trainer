@@ -28,6 +28,19 @@ export function applySanMove(fen: string, san: string): AppliedMove | null {
   }
 }
 
+/** Converts a single UCI move (e.g. "e2e4", "e7e8q") to SAN from the given position. */
+export function uciToSan(fen: string, uci: string): string | null {
+  const chess = new Chess(fen)
+  const from = uci.slice(0, 2)
+  const to = uci.slice(2, 4)
+  const promotion = uci.length > 4 ? uci.slice(4, 5) : undefined
+  try {
+    return chess.move({ from, to, promotion }).san
+  } catch {
+    return null
+  }
+}
+
 /**
  * Strips the halfmove/fullmove clocks from a FEN, since they're irrelevant
  * to position identity for repertoire purposes and would otherwise stop

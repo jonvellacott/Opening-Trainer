@@ -2,15 +2,18 @@ import { useState } from 'react'
 import { SignInView } from './auth/SignInView'
 import { useFamily } from './auth/useFamily'
 import { useSession } from './auth/useSession'
+import { parseBuildHash } from './lib/buildHash'
 import { supabase } from './lib/supabase'
 import { BuildView } from './views/BuildView'
 import { DebugImportView } from './views/DebugImportView'
 import { QuizView } from './views/QuizView'
+import { SettingsView } from './views/SettingsView'
 
-type View = 'quiz' | 'build' | 'debug'
+type View = 'quiz' | 'build' | 'settings' | 'debug'
 
 function App() {
-  const [view, setView] = useState<View>('quiz')
+  // A bookmarked/refreshed Build deep link should land straight back in Build mode.
+  const [view, setView] = useState<View>(() => (parseBuildHash(window.location.hash) ? 'build' : 'quiz'))
   const { session, loading } = useSession()
   const { familyId, loading: familyLoading, error: familyError } = useFamily(session)
 
@@ -43,6 +46,9 @@ function App() {
         <button type="button" onClick={() => setView('build')} disabled={view === 'build'}>
           Build
         </button>
+        <button type="button" onClick={() => setView('settings')} disabled={view === 'settings'}>
+          Settings
+        </button>
         <button type="button" onClick={() => setView('debug')} disabled={view === 'debug'}>
           Debug tree
         </button>
@@ -55,6 +61,7 @@ function App() {
       </nav>
       {view === 'quiz' && <QuizView />}
       {view === 'build' && familyId && <BuildView familyId={familyId} userId={session.user.id} />}
+      {view === 'settings' && familyId && <SettingsView familyId={familyId} />}
       {view === 'debug' && <DebugImportView />}
     </div>
   )
