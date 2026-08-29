@@ -59,7 +59,7 @@ function App() {
           Sign out
         </button>
       </nav>
-      {view === 'quiz' && <QuizView />}
+      {view === 'quiz' && familyId && <QuizView familyId={familyId} />}
       {view === 'build' && familyId && <BuildView familyId={familyId} userId={session.user.id} />}
       {view === 'settings' && familyId && <SettingsView familyId={familyId} />}
       {view === 'debug' && <DebugImportView />}

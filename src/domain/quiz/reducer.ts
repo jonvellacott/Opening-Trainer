@@ -1,31 +1,30 @@
-import { findMatchingChild, getChildren } from '../repertoire/queries'
-import type { QuizAction, QuizState } from './types'
+import { findMatchingChild, getChildren } from './queries'
+import type { QuizAction, QuizState, RepertoireEdge } from './types'
 
 /**
- * All randomness (which chapter, which opponent branch) is supplied by the
- * caller as action payloads, so this reducer stays a pure function and the
- * rep-completion bookkeeping is easy to test without mocking Math.random.
+ * All randomness (which opponent branch) is supplied by the caller as action
+ * payloads, so this reducer stays a pure function and the rep-completion
+ * bookkeeping is easy to test without mocking Math.random.
  */
 export function quizReducer(state: QuizState, action: QuizAction): QuizState {
   switch (action.type) {
     case 'START_REP': {
-      const chapter = state.repertoire.chapters[action.chapterIndex]
       return {
         ...state,
-        chapter,
-        currentNodeId: null,
+        currentFen: state.rootFen,
+        path: [],
         lastOutcome: null,
         hadMistakeThisRep: false,
       }
     }
 
     case 'AUTO_ADVANCE': {
-      const children = getChildren(state.chapter, state.currentNodeId)
-      return advanceTo(state, children[action.childIndex].id)
+      const children = getChildren(state.edges, state.currentFen)
+      return advanceTo(state, children[action.childIndex])
     }
 
     case 'SUBMIT_MOVE': {
-      const match = findMatchingChild(state.chapter, state.currentNodeId, action.san)
+      const match = findMatchingChild(state.edges, state.currentFen, action.san)
       if (!match) {
         return {
           ...state,
@@ -34,7 +33,7 @@ export function quizReducer(state: QuizState, action: QuizAction): QuizState {
           sessionStats: { ...state.sessionStats, mistakes: state.sessionStats.mistakes + 1 },
         }
       }
-      return advanceTo(state, match.id)
+      return advanceTo(state, match)
     }
 
     default:
@@ -42,11 +41,12 @@ export function quizReducer(state: QuizState, action: QuizAction): QuizState {
   }
 }
 
-function advanceTo(state: QuizState, nodeId: string): QuizState {
-  const isLeaf = getChildren(state.chapter, nodeId).length === 0
+function advanceTo(state: QuizState, edge: RepertoireEdge): QuizState {
+  const isLeaf = getChildren(state.edges, edge.toFen).length === 0
   return {
     ...state,
-    currentNodeId: nodeId,
+    currentFen: edge.toFen,
+    path: [...state.path, edge],
     lastOutcome: 'correct',
     sessionStats: isLeaf
       ? {

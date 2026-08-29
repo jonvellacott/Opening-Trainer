@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applySanMove, normalizeFen, STANDARD_STARTING_FEN } from './index'
+import { applySanMove, colorToMove, normalizeFen, STANDARD_STARTING_FEN } from './index'
 
 describe('applySanMove', () => {
   it('applies a legal move and returns the resulting position', () => {
@@ -22,5 +22,12 @@ describe('normalizeFen', () => {
 
   it('leaves an already-normalized FEN unchanged', () => {
     expect(normalizeFen(STANDARD_STARTING_FEN)).toBe(STANDARD_STARTING_FEN)
+  })
+})
+
+describe('colorToMove', () => {
+  it('reads the side to move from the FEN', () => {
+    expect(colorToMove(STANDARD_STARTING_FEN)).toBe('white')
+    expect(colorToMove(applySanMove(STANDARD_STARTING_FEN, 'e4')!.fen)).toBe('black')
   })
 })

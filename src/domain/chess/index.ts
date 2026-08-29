@@ -41,6 +41,10 @@ export function uciToSan(fen: string, uci: string): string | null {
   }
 }
 
+export function colorToMove(fen: string): 'white' | 'black' {
+  return new Chess(fen).turn() === 'w' ? 'white' : 'black'
+}
+
 /**
  * Strips the halfmove/fullmove clocks from a FEN, since they're irrelevant
  * to position identity for repertoire purposes and would otherwise stop

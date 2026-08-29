@@ -1,17 +1,13 @@
-import { useEffect, useMemo, useReducer, useState } from 'react'
+import { useEffect, useReducer, useState } from 'react'
 import { Chess } from 'chess.js'
 import { Chessboard } from 'react-chessboard'
 import type { PieceDropHandlerArgs } from 'react-chessboard'
-import { quizReducer } from '../domain/quiz'
-import type { QuizState } from '../domain/quiz'
-import {
-  findMatchingChild,
-  getChildren,
-  groupAndMergeChapters,
-  nextMoveColor,
-} from '../domain/repertoire'
-import type { Color, Repertoire } from '../domain/repertoire'
-import { useRepertoireLoader } from './useRepertoireLoader'
+import { colorToMove } from '../domain/chess'
+import { findMatchingChild, getChildren, nextMoveColor, quizReducer } from '../domain/quiz'
+import type { QuizState, RepertoireEdge } from '../domain/quiz'
+import { listEdges, listRepertoires } from '../lib/repertoireRepo'
+import type { EdgeRow, RepertoireRow } from '../lib/repertoireRepo'
+import { useClickToMove } from './useClickToMove'
 
 const REP_COMPLETE_DELAY_MS = 1200
 const AUTO_MOVE_DELAY_MS = 500
@@ -20,120 +16,241 @@ function randomIndex(length: number): number {
   return Math.floor(Math.random() * length)
 }
 
-function initialQuizState(repertoire: Repertoire): QuizState {
+function toRepertoireEdge(edge: EdgeRow): RepertoireEdge {
   return {
-    repertoire,
-    chapter: repertoire.chapters[randomIndex(repertoire.chapters.length)],
-    currentNodeId: null,
+    fromFen: edge.from_fen,
+    san: edge.san,
+    toFen: edge.to_fen,
+    active: edge.status !== 'ignored',
+  }
+}
+
+function initialQuizState(repertoire: RepertoireRow, edges: RepertoireEdge[]): QuizState {
+  return {
+    rootFen: repertoire.root_fen,
+    trainingColor: repertoire.training_color,
+    edges,
+    currentFen: repertoire.root_fen,
+    path: [],
     lastOutcome: null,
     hadMistakeThisRep: false,
     sessionStats: { repsCompleted: 0, perfectReps: 0, mistakes: 0 },
   }
 }
 
-function QuizSession({ repertoire }: { repertoire: Repertoire }) {
-  // Chapters that share a starting position and colour are merged into one
-  // tree, so a branch point on the training side (e.g. two White chapters
-  // both starting 1.d4) is a choice you make by playing a move, not a
-  // pre-selection the app makes for you.
-  const quizRepertoire = useMemo(
-    () => ({ ...repertoire, chapters: groupAndMergeChapters(repertoire.chapters) }),
-    [repertoire],
-  )
-  const [state, dispatch] = useReducer(quizReducer, quizRepertoire, initialQuizState)
-  const { chapter, currentNodeId, sessionStats } = state
+interface MoveRow {
+  number: number
+  white?: string
+  black?: string
+}
 
-  const position = currentNodeId ? chapter.nodes[currentNodeId].fen : chapter.startingFen
-  const comment = currentNodeId ? chapter.nodes[currentNodeId].comment : undefined
-  const nextColor = nextMoveColor(chapter, currentNodeId)
-  const isTraineesTurn = nextColor === chapter.trainingColor
+/** Pairs a played path into White/Black rows, numbered like standard notation. */
+function buildMoveRows(path: RepertoireEdge[]): MoveRow[] {
+  const rows: MoveRow[] = []
+  let number = 0
+
+  for (const edge of path) {
+    if (colorToMove(edge.fromFen) === 'white') {
+      number += 1
+      rows.push({ number, white: edge.san })
+    } else {
+      const lastRow = rows[rows.length - 1]
+      if (lastRow && lastRow.black === undefined) {
+        lastRow.black = edge.san
+      } else {
+        number += 1
+        rows.push({ number, black: edge.san })
+      }
+    }
+  }
+
+  return rows
+}
+
+function CurrentLinePanel({ path }: { path: RepertoireEdge[] }) {
+  const rows = buildMoveRows(path)
+
+  return (
+    <div style={{ fontSize: '0.9rem' }}>
+      <h3
+        style={{
+          margin: '0 0 0.25rem',
+          fontSize: '0.7rem',
+          fontWeight: 600,
+          color: '#888',
+          textTransform: 'uppercase',
+          letterSpacing: '0.06em',
+        }}
+      >
+        Current Line
+      </h3>
+      {rows.length === 0 && <p style={{ color: '#888', margin: 0 }}>Start of the repertoire</p>}
+      {rows.map((row) => (
+        <div key={row.number} style={{ display: 'flex', gap: '0.5rem' }}>
+          <span style={{ width: 22, flexShrink: 0, color: '#888' }}>{row.number}.</span>
+          <span style={{ width: 64, flexShrink: 0 }}>{row.white ?? ''}</span>
+          <span style={{ width: 64, flexShrink: 0 }}>{row.black ?? ''}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function QuizRunner({
+  repertoire,
+  edges,
+}: {
+  repertoire: RepertoireRow
+  edges: RepertoireEdge[]
+}) {
+  const [state, dispatch] = useReducer(quizReducer, undefined, () =>
+    initialQuizState(repertoire, edges),
+  )
+  const { currentFen, sessionStats } = state
+
+  const nextColor = nextMoveColor(state.edges, currentFen)
+  const isTraineesTurn = nextColor === repertoire.training_color
   const isRepComplete = nextColor === null
 
   // Auto-play the opponent's move, or start the next rep once this one ends.
   useEffect(() => {
     if (isRepComplete) {
-      const timer = setTimeout(() => {
-        dispatch({ type: 'START_REP', chapterIndex: randomIndex(state.repertoire.chapters.length) })
-      }, REP_COMPLETE_DELAY_MS)
+      const timer = setTimeout(() => dispatch({ type: 'START_REP' }), REP_COMPLETE_DELAY_MS)
       return () => clearTimeout(timer)
     }
 
     if (!isTraineesTurn) {
       const timer = setTimeout(() => {
-        const children = getChildren(chapter, currentNodeId)
+        const children = getChildren(state.edges, currentFen)
         dispatch({ type: 'AUTO_ADVANCE', childIndex: randomIndex(children.length) })
       }, AUTO_MOVE_DELAY_MS)
       return () => clearTimeout(timer)
     }
-  }, [chapter, currentNodeId, isRepComplete, isTraineesTurn, state.repertoire.chapters.length])
+  }, [state.edges, currentFen, isRepComplete, isTraineesTurn])
 
-  function onPieceDrop({ sourceSquare, targetSquare }: PieceDropHandlerArgs): boolean {
-    if (!isTraineesTurn || !targetSquare) return false
-
+  function attemptMove(from: string, to: string): boolean {
     let san: string
     try {
-      san = new Chess(position).move({ from: sourceSquare, to: targetSquare, promotion: 'q' }).san
+      san = new Chess(currentFen).move({ from, to, promotion: 'q' }).san
     } catch {
       return false // not a legal chess move at all
     }
 
-    const isInRepertoire = Boolean(findMatchingChild(chapter, currentNodeId, san))
+    const isInRepertoire = Boolean(findMatchingChild(state.edges, currentFen, san))
     dispatch({ type: 'SUBMIT_MOVE', san })
     return isInRepertoire
   }
 
+  const { squareStyles, onSquareClick } = useClickToMove(currentFen, attemptMove, isTraineesTurn)
+
+  function onPieceDrop({ sourceSquare, targetSquare }: PieceDropHandlerArgs): boolean {
+    if (!isTraineesTurn || !targetSquare) return false
+    return attemptMove(sourceSquare, targetSquare)
+  }
+
   return (
-    <div style={{ maxWidth: 480, margin: '2rem auto' }}>
-      <p>
-        {chapter.name} ({chapter.trainingColor}) — reps: {sessionStats.repsCompleted} (perfect:{' '}
-        {sessionStats.perfectReps}, mistakes: {sessionStats.mistakes})
-      </p>
-      <Chessboard
-        options={{
-          position,
-          onPieceDrop,
-          boardOrientation: chapter.trainingColor,
-          allowDragging: isTraineesTurn,
-        }}
-      />
-      <div style={{ minHeight: '3rem', marginTop: '0.5rem' }}>
-        {state.lastOutcome === 'wrong' && (
-          <p style={{ color: 'crimson' }}>✗ Not in your repertoire — try again</p>
-        )}
-        {isRepComplete && <p>Rep complete — starting a new one…</p>}
-        {comment && <p>{comment}</p>}
+    <div style={{ display: 'flex', gap: '2rem', maxWidth: 780, margin: '2rem auto', alignItems: 'flex-start' }}>
+      <div style={{ width: 220, flexShrink: 0 }}>
+        <CurrentLinePanel path={state.path} />
+      </div>
+      <div style={{ width: 480, flexShrink: 0 }}>
+        <p>
+          {repertoire.name} ({repertoire.training_color}) — reps: {sessionStats.repsCompleted}{' '}
+          (perfect: {sessionStats.perfectReps}, mistakes: {sessionStats.mistakes})
+        </p>
+        <Chessboard
+          options={{
+            position: currentFen,
+            onPieceDrop,
+            onSquareClick,
+            squareStyles,
+            boardOrientation: repertoire.training_color,
+            allowDragging: isTraineesTurn,
+          }}
+        />
+        <div style={{ minHeight: '3rem', marginTop: '0.5rem' }}>
+          {state.lastOutcome === 'wrong' && (
+            <p style={{ color: 'crimson' }}>✗ Not in your repertoire — try again</p>
+          )}
+          {isRepComplete && <p>Rep complete — starting a new one…</p>}
+        </div>
       </div>
     </div>
   )
 }
 
-export function QuizView() {
-  const [studyInput, setStudyInput] = useState('wDAoY1rd')
-  const [trainingColor, setTrainingColor] = useState<Color>('white')
-  const { repertoire, error, loading, load } = useRepertoireLoader()
+function QuizSession({ repertoire }: { repertoire: RepertoireRow }) {
+  const [edges, setEdges] = useState<RepertoireEdge[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setEdges(null)
+    setError(null)
+    listEdges(repertoire.id)
+      .then((rows) => setEdges(rows.map(toRepertoireEdge)))
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+  }, [repertoire.id])
+
+  if (error) {
+    return <p style={{ color: 'crimson', maxWidth: 480, margin: '2rem auto' }}>{error}</p>
+  }
+  if (!edges) {
+    return <p style={{ maxWidth: 480, margin: '2rem auto' }}>Loading…</p>
+  }
+  if (edges.every((edge) => !edge.active)) {
+    return (
+      <p style={{ maxWidth: 480, margin: '2rem auto' }}>
+        "{repertoire.name}" doesn't have any moves yet — add some in Build mode first.
+      </p>
+    )
+  }
+  return <QuizRunner repertoire={repertoire} edges={edges} />
+}
+
+function RepertoirePicker({
+  familyId,
+  onSelect,
+}: {
+  familyId: string
+  onSelect: (repertoire: RepertoireRow) => void
+}) {
+  const [repertoires, setRepertoires] = useState<RepertoireRow[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    listRepertoires(familyId)
+      .then(setRepertoires)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+  }, [familyId])
+
+  return (
+    <div style={{ padding: '1rem', maxWidth: 480, margin: '2rem auto' }}>
+      <h2>Start a quiz</h2>
+      {error && <p style={{ color: 'crimson' }}>{error}</p>}
+      {!error && !repertoires && <p>Loading…</p>}
+      {repertoires && repertoires.length === 0 && (
+        <p>No repertoires yet — build one in Build mode first.</p>
+      )}
+      {repertoires && repertoires.length > 0 && (
+        <ul>
+          {repertoires.map((r) => (
+            <li key={r.id}>
+              <button type="button" onClick={() => onSelect(r)}>
+                {r.name} ({r.training_color})
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+export function QuizView({ familyId }: { familyId: string }) {
+  const [repertoire, setRepertoire] = useState<RepertoireRow | null>(null)
 
   if (!repertoire) {
-    return (
-      <div style={{ padding: '1rem', maxWidth: 480, margin: '0 auto' }}>
-        <h2>Start a quiz</h2>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <input
-            value={studyInput}
-            onChange={(e) => setStudyInput(e.target.value)}
-            placeholder="Study ID or URL"
-            style={{ flex: 1 }}
-          />
-          <select value={trainingColor} onChange={(e) => setTrainingColor(e.target.value as Color)}>
-            <option value="white">White</option>
-            <option value="black">Black</option>
-          </select>
-          <button type="button" onClick={() => load(studyInput, trainingColor)} disabled={loading}>
-            {loading ? 'Loading…' : 'Load'}
-          </button>
-        </div>
-        {error && <p style={{ color: 'crimson' }}>{error}</p>}
-      </div>
-    )
+    return <RepertoirePicker familyId={familyId} onSelect={setRepertoire} />
   }
 
   return <QuizSession repertoire={repertoire} />
