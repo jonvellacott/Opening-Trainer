@@ -175,10 +175,20 @@ function QuizRunner({
   }
 
   return (
-    <div style={{ display: 'flex', gap: '2rem', maxWidth: 780, margin: '2rem auto', alignItems: 'flex-start' }}>
-      <div style={{ width: 220, flexShrink: 0 }}>
+    <div
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '2rem',
+        maxWidth: 780,
+        margin: '2rem auto',
+        padding: '0 1rem',
+        alignItems: 'flex-start',
+      }}
+    >
+      <div style={{ flex: '1 1 220px' }}>
         <CurrentLinePanel rows={rows} />
-        <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', marginTop: '0.5rem' }}>
           <button type="button" onClick={handleCopyPgn} style={linkButtonStyle}>
             {pgnCopied ? 'Copied!' : 'Copy PGN'}
           </button>
@@ -187,7 +197,7 @@ function QuizRunner({
           </a>
         </div>
       </div>
-      <div style={{ width: 480, flexShrink: 0 }}>
+      <div style={{ flex: '0 1 480px', minWidth: 0 }}>
         <p>
           {repertoire.name} ({repertoire.training_color}) — reps: {sessionStats.repsCompleted}{' '}
           (perfect: {sessionStats.perfectReps}, mistakes: {sessionStats.mistakes})

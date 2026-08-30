@@ -41,6 +41,7 @@ function App() {
       <nav
         style={{
           display: 'flex',
+          flexWrap: 'wrap',
           alignItems: 'center',
           gap: '0.5rem',
           padding: '0.5rem',
