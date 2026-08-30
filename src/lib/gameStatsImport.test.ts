@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { STANDARD_STARTING_FEN } from '../domain/chess'
-import { aggregateChessComGames } from './gameStatsImport'
+import { aggregateChessComGames, aggregateLichessGames } from './gameStatsImport'
 import type { MoveStatsRow } from './moveStatsRepo'
 import type { ChessComGame } from './chessComApi'
+import type { LichessGame } from './lichessGamesApi'
 
 const USERNAME = 'chesswithakeem'
 
@@ -97,6 +98,85 @@ describe('aggregateChessComGames', () => {
 
     const stats = new Map<string, MoveStatsRow>()
     aggregateChessComGames(games, USERNAME, 20, 'chess.com:chesswithakeem', stats)
+    expect(stats.size).toBe(0)
+  })
+})
+
+const LICHESS_USERNAME = 'ericrosen'
+
+function lichessGame(params: {
+  white: string
+  black: string
+  winner?: 'white' | 'black'
+  moves: string
+  variant?: string
+}): LichessGame {
+  return {
+    variant: params.variant ?? 'standard',
+    white: params.white,
+    black: params.black,
+    winner: params.winner,
+    moves: params.moves,
+  }
+}
+
+describe('aggregateLichessGames', () => {
+  it("only tallies the tracked player's own moves, keyed by the position before each move", () => {
+    const games: LichessGame[] = [
+      lichessGame({ white: LICHESS_USERNAME, black: 'opponent', winner: 'white', moves: 'd4 d5 c4 e6' }),
+      // Lichess user ids are already lowercase, but match case-insensitively anyway.
+      lichessGame({ white: 'someone', black: LICHESS_USERNAME, moves: 'e4 e5 Nf3 Nc6' }), // no winner = draw
+    ]
+
+    const stats = new Map<string, MoveStatsRow>()
+    aggregateLichessGames(games, LICHESS_USERNAME, 20, 'lichess:ericrosen', stats)
+    const rows = [...stats.values()]
+
+    const d4Row = rows.find((r) => r.san === 'd4')
+    expect(d4Row?.from_fen).toBe(STANDARD_STARTING_FEN)
+    expect(d4Row?.stats).toEqual({ white: 1, draws: 0, black: 0 })
+    expect(rows.find((r) => r.san === 'd5')).toBeUndefined()
+
+    const e5Row = rows.find((r) => r.san === 'e5')
+    expect(e5Row?.stats).toEqual({ white: 0, draws: 1, black: 0 })
+    expect(rows.find((r) => r.san === 'e4')).toBeUndefined()
+  })
+
+  it('caps replay at maxPlies', () => {
+    const games: LichessGame[] = [
+      lichessGame({ white: LICHESS_USERNAME, black: 'opp', winner: 'white', moves: 'd4 d5 c4 e6 Nc3 Nf6' }),
+    ]
+
+    const stats = new Map<string, MoveStatsRow>()
+    aggregateLichessGames(games, LICHESS_USERNAME, 3, 'lichess:ericrosen', stats)
+    const sans = [...stats.values()].map((r) => r.san)
+
+    expect(sans).toContain('d4')
+    expect(sans).toContain('c4')
+    expect(sans).not.toContain('Nc3')
+  })
+
+  it('skips non-standard variants', () => {
+    const games: LichessGame[] = [
+      lichessGame({
+        white: LICHESS_USERNAME,
+        black: 'opp',
+        winner: 'white',
+        moves: 'e4 e5',
+        variant: 'chess960',
+      }),
+    ]
+
+    const stats = new Map<string, MoveStatsRow>()
+    aggregateLichessGames(games, LICHESS_USERNAME, 20, 'lichess:ericrosen', stats)
+    expect(stats.size).toBe(0)
+  })
+
+  it('ignores games the tracked player was not part of', () => {
+    const games: LichessGame[] = [lichessGame({ white: 'someone', black: 'someoneElse', moves: 'd4 d5' })]
+
+    const stats = new Map<string, MoveStatsRow>()
+    aggregateLichessGames(games, LICHESS_USERNAME, 20, 'lichess:ericrosen', stats)
     expect(stats.size).toBe(0)
   })
 })

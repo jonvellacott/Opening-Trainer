@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { getFamily, updateSuggestionThreshold } from '../lib/familiesRepo'
-import { importChessComPlayer } from '../lib/gameStatsImport'
+import { importChessComPlayer, importLichessPlayer } from '../lib/gameStatsImport'
 import type { ImportProgress } from '../lib/gameStatsImport'
 import { saveMoveStats } from '../lib/moveStatsRepo'
 import {
@@ -103,7 +103,6 @@ function TrackedPlayerCard({
   onDelete: () => void
 }) {
   const importing = importState !== undefined && importState.error === undefined
-  const needsImport = player.source === 'chess.com'
 
   return (
     <div style={{ border: '1px solid rgba(128,128,128,0.3)', borderRadius: 8, padding: '0.75rem 1rem' }}>
@@ -113,22 +112,19 @@ function TrackedPlayerCard({
           <span style={{ color: '#888', fontSize: '0.85rem' }}>({player.source})</span>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
-          {needsImport && (
-            <button type="button" onClick={onImport} disabled={importing}>
-              {player.last_imported_at ? 'Refresh' : 'Import'}
-            </button>
-          )}
+          <button type="button" onClick={onImport} disabled={importing}>
+            {player.last_imported_at ? 'Refresh' : 'Import'}
+          </button>
           <button type="button" onClick={onDelete} disabled={importing}>
             Remove
           </button>
         </div>
       </div>
       <p style={{ margin: '0.25rem 0 0', fontSize: '0.8rem', color: '#888' }}>
-        {needsImport ? formatLastImported(player.last_imported_at) : 'Live — queried directly, no import needed'}
+        {formatLastImported(player.last_imported_at)}
       </p>
       {importState?.progress && (
         <p style={{ margin: '0.25rem 0 0', fontSize: '0.8rem' }}>
-          Month {importState.progress.monthsDone}/{importState.progress.monthsTotal} ·{' '}
           {importState.progress.gamesProcessed.toLocaleString()} games processed…
         </p>
       )}
@@ -174,13 +170,10 @@ export function SettingsView({ familyId }: { familyId: string }) {
   async function handleImport(player: TrackedPlayerRow) {
     setImportStates((prev) => ({ ...prev, [player.id]: {} }))
 
-    if (player.source !== 'chess.com') {
-      // Lichess accounts are queried live in Build mode — nothing to import.
-      return
-    }
+    const importPlayer = player.source === 'chess.com' ? importChessComPlayer : importLichessPlayer
 
     try {
-      const rows = await importChessComPlayer(player.username, MAX_IMPORT_PLIES, (progress) => {
+      const rows = await importPlayer(player.username, MAX_IMPORT_PLIES, (progress) => {
         setImportStates((prev) => ({ ...prev, [player.id]: { progress } }))
       })
       await saveMoveStats(rows)
@@ -208,9 +201,9 @@ export function SettingsView({ familyId }: { familyId: string }) {
       <ThresholdSetting familyId={familyId} />
       <h2>Tracked players</h2>
       <p style={{ color: '#888' }}>
-        Accounts whose games feed move suggestions in Build mode. Lichess accounts are queried live —
-        nothing to do here beyond adding them. Chess.com accounts need an import first (pulls their full
-        public game history, which can take a while for prolific accounts), and again later to refresh.
+        Accounts whose games feed move suggestions in Build mode. Each one needs an import before its
+        moves show up (pulls its full public game history — can take a while for very active accounts),
+        and again later to refresh with newer games.
       </p>
 
       {players === null && <p>Loading…</p>}

@@ -3,6 +3,8 @@ import { Chess } from 'chess.js'
 import { Chessboard } from 'react-chessboard'
 import type { PieceDropHandlerArgs } from 'react-chessboard'
 import { colorToMove } from '../domain/chess'
+import { buildPgn } from '../domain/pgn'
+import type { MoveRow } from '../domain/pgn'
 import { findMatchingChild, getChildren, nextMoveColor, quizReducer } from '../domain/quiz'
 import type { QuizState, RepertoireEdge } from '../domain/quiz'
 import { listEdges, listRepertoires } from '../lib/repertoireRepo'
@@ -11,6 +13,26 @@ import { useClickToMove } from './useClickToMove'
 
 const REP_COMPLETE_DELAY_MS = 1200
 const AUTO_MOVE_DELAY_MS = 500
+
+const linkButtonStyle = {
+  border: 'none',
+  background: 'none',
+  color: '#888',
+  cursor: 'pointer',
+  padding: 0,
+  font: 'inherit',
+  fontSize: '0.75rem',
+} as const
+
+/**
+ * Lichess's analysis board reads the FEN from the URL path, not a query
+ * string (?fen= is silently ignored) — spaces become underscores and the
+ * slashes stay literal, since encoding them as %2F leaves the path
+ * unparsed. A FEN's own characters are all otherwise URL-safe.
+ */
+function lichessAnalysisUrl(fen: string): string {
+  return `https://lichess.org/analysis/${fen.replaceAll(' ', '_')}`
+}
 
 function randomIndex(length: number): number {
   return Math.floor(Math.random() * length)
@@ -38,12 +60,6 @@ function initialQuizState(repertoire: RepertoireRow, edges: RepertoireEdge[]): Q
   }
 }
 
-interface MoveRow {
-  number: number
-  white?: string
-  black?: string
-}
-
 /** Pairs a played path into White/Black rows, numbered like standard notation. */
 function buildMoveRows(path: RepertoireEdge[]): MoveRow[] {
   const rows: MoveRow[] = []
@@ -67,9 +83,7 @@ function buildMoveRows(path: RepertoireEdge[]): MoveRow[] {
   return rows
 }
 
-function CurrentLinePanel({ path }: { path: RepertoireEdge[] }) {
-  const rows = buildMoveRows(path)
-
+function CurrentLinePanel({ rows }: { rows: MoveRow[] }) {
   return (
     <div style={{ fontSize: '0.9rem' }}>
       <h3
@@ -107,6 +121,8 @@ function QuizRunner({
     initialQuizState(repertoire, edges),
   )
   const { currentFen, sessionStats } = state
+  const [pgnCopied, setPgnCopied] = useState(false)
+  const rows = buildMoveRows(state.path)
 
   const nextColor = nextMoveColor(state.edges, currentFen)
   const isTraineesTurn = nextColor === repertoire.training_color
@@ -148,10 +164,28 @@ function QuizRunner({
     return attemptMove(sourceSquare, targetSquare)
   }
 
+  async function handleCopyPgn() {
+    try {
+      await navigator.clipboard.writeText(buildPgn(repertoire.root_fen, rows))
+      setPgnCopied(true)
+      setTimeout(() => setPgnCopied(false), 1500)
+    } catch {
+      // clipboard access can fail (permissions, insecure context) — not worth surfacing as a training error
+    }
+  }
+
   return (
     <div style={{ display: 'flex', gap: '2rem', maxWidth: 780, margin: '2rem auto', alignItems: 'flex-start' }}>
       <div style={{ width: 220, flexShrink: 0 }}>
-        <CurrentLinePanel path={state.path} />
+        <CurrentLinePanel rows={rows} />
+        <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
+          <button type="button" onClick={handleCopyPgn} style={linkButtonStyle}>
+            {pgnCopied ? 'Copied!' : 'Copy PGN'}
+          </button>
+          <a href={lichessAnalysisUrl(currentFen)} target="_blank" rel="noreferrer" style={linkButtonStyle}>
+            Analyze on Lichess ↗
+          </a>
+        </div>
       </div>
       <div style={{ width: 480, flexShrink: 0 }}>
         <p>

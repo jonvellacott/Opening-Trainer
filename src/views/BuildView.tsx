@@ -1,18 +1,18 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Chess } from 'chess.js'
 import { Chessboard } from 'react-chessboard'
 import type { PieceDropHandlerArgs } from 'react-chessboard'
-import { applySanMove, colorToMove, normalizeFen, STANDARD_STARTING_FEN, uciToSan } from '../domain/chess'
+import { colorToMove, normalizeFen, STANDARD_STARTING_FEN, uciToSan } from '../domain/chess'
+import { buildPgn } from '../domain/pgn'
 import type { Color } from '../domain/repertoire'
 import { buildHash, parseBuildHash } from '../lib/buildHash'
 import { getFamily } from '../lib/familiesRepo'
 import { fetchCloudEval } from '../lib/lichessCloudEval'
 import type { CloudEvalLine } from '../lib/lichessCloudEval'
-import { fetchExplorerMoves, fetchPlayerExplorerMoves } from '../lib/lichessExplorer'
+import { fetchExplorerMoves } from '../lib/lichessExplorer'
 import type { ExplorerMove } from '../lib/lichessExplorer'
-import { listMoveStatsBySource, moveStatsToExplorerMoves, saveMoveStats } from '../lib/moveStatsRepo'
-import type { MoveStatsRow } from '../lib/moveStatsRepo'
+import { listMoveStatsBySource, moveStatsToExplorerMoves } from '../lib/moveStatsRepo'
 import {
   createRepertoire,
   deleteEdges,
@@ -134,6 +134,16 @@ function groupByFromFen(edges: EdgeRow[]): Map<string, EdgeRow[]> {
     else map.set(edge.from_fen, [edge])
   }
   return map
+}
+
+/**
+ * Lichess's analysis board reads the FEN from the URL path, not a query
+ * string (?fen= is silently ignored) — spaces become underscores and the
+ * slashes stay literal, since encoding them as %2F leaves the path
+ * unparsed. A FEN's own characters are all otherwise URL-safe.
+ */
+function lichessAnalysisUrl(fen: string): string {
+  return `https://lichess.org/analysis/${fen.replaceAll(' ', '_')}`
 }
 
 /**
@@ -647,46 +657,6 @@ function buildStreamerSuggestions(moves: ExplorerMove[], thresholdPercent: numbe
     .sort((a, b) => (b.percentage ?? 0) - (a.percentage ?? 0))
 }
 
-/** Reshapes a live Lichess explorer response into rows cacheable in move_stats. */
-function toMoveStatsRows(source: string, fen: string, moves: ExplorerMove[]): MoveStatsRow[] {
-  const rows: MoveStatsRow[] = []
-  for (const move of moves) {
-    const applied = applySanMove(fen, move.san)
-    if (!applied) continue // shouldn't happen -- san came from Lichess's own explorer for this fen
-    rows.push({
-      from_fen: fen,
-      san: move.san,
-      to_fen: applied.fen,
-      source,
-      stats: { white: move.white, draws: move.draws, black: move.black },
-    })
-  }
-  return rows
-}
-
-/**
- * A Lichess player's live per-position lookup is slow (Lichess indexes their
- * games on demand), so results are cached in move_stats the same way a
- * Chess.com import is, just lazily — one position at a time as you visit it,
- * rather than a bulk import. `bypassCache` forces a fresh live lookup (the
- * Builder's per-streamer "Refresh" link), overwriting whatever was cached.
- */
-async function fetchLichessPlayerMoves(
-  player: TrackedPlayerRow,
-  fen: string,
-  color: Color,
-  bypassCache: boolean,
-): Promise<ExplorerMove[]> {
-  const source = statsSourceFor(player)
-  if (!bypassCache) {
-    const cached = await listMoveStatsBySource(source, fen)
-    if (cached.length > 0) return moveStatsToExplorerMoves(cached)
-  }
-  const moves = await fetchPlayerExplorerMoves(fen, player.username, color)
-  saveMoveStats(toMoveStatsRows(source, fen, moves)).catch(() => {}) // best-effort cache write
-  return moves
-}
-
 const mutedNoteStyle = { color: '#888', margin: 0, fontSize: '0.8rem' } as const
 
 interface StreamerData {
@@ -702,14 +672,12 @@ function StreamerAccordion({
   expanded,
   onToggle,
   onSelect,
-  onRefresh,
 }: {
   data: StreamerData
   thresholdPercent: number
   expanded: boolean
   onToggle: () => void
   onSelect: (san: string) => void
-  onRefresh: () => void
 }) {
   const suggestions = useMemo(
     () => (data.moves ? buildStreamerSuggestions(data.moves, thresholdPercent) : []),
@@ -742,11 +710,6 @@ function StreamerAccordion({
           <strong style={{ fontSize: '0.85rem' }}>{data.player.username}</strong>
           <span style={{ fontSize: '0.7rem', color: '#888' }}>({data.player.source})</span>
         </button>
-        {data.player.source === 'lichess' && (
-          <button type="button" onClick={onRefresh} disabled={data.loading} style={linkButtonStyle}>
-            {data.loading ? 'Refreshing…' : 'Refresh'}
-          </button>
-        )}
       </div>
       {expanded && (
         <div style={{ paddingLeft: '0.8rem', marginTop: '0.25rem' }}>
@@ -783,7 +746,6 @@ function PlayerMoves({
   streamers,
   expandedStreamers,
   onToggleStreamer,
-  onRefreshStreamer,
   thresholdPercent,
   onSelectKnown,
   onSelectSuggestion,
@@ -801,7 +763,6 @@ function PlayerMoves({
   streamers: StreamerData[]
   expandedStreamers: ReadonlySet<string>
   onToggleStreamer: (playerId: string) => void
-  onRefreshStreamer: (playerId: string) => void
   thresholdPercent: number
   onSelectKnown: (edge: EdgeRow) => void
   onSelectSuggestion: (san: string) => void
@@ -891,7 +852,6 @@ function PlayerMoves({
               expanded={expandedStreamers.has(data.player.id)}
               onToggle={() => onToggleStreamer(data.player.id)}
               onSelect={onSelectSuggestion}
-              onRefresh={() => onRefreshStreamer(data.player.id)}
             />
           ))}
         </div>
@@ -966,6 +926,55 @@ function reconstructPathTo(targetFen: string, rootFen: string, edges: EdgeRow[])
   return path.reverse()
 }
 
+const NAV_STORAGE_PREFIX = 'build-nav-path:'
+
+/**
+ * Remembers the exact sequence of edge ids played in one repertoire this tab
+ * session, so a page reload (a dev-server hot-reload counts too) can restore
+ * precisely where you were — see resolveStoredPath for why this is preferred
+ * over reconstructPathTo's FEN-only reconstruction.
+ */
+function readStoredPath(repertoireId: string): string[] | null {
+  try {
+    const raw = sessionStorage.getItem(NAV_STORAGE_PREFIX + repertoireId)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) && parsed.every((x) => typeof x === 'string') ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function writeStoredPath(repertoireId: string, edgeIds: string[]): void {
+  try {
+    sessionStorage.setItem(NAV_STORAGE_PREFIX + repertoireId, JSON.stringify(edgeIds))
+  } catch {
+    // sessionStorage can be unavailable (private browsing, quota) — losing
+    // exact-path recall on reload is a minor degradation, not worth surfacing
+  }
+}
+
+/**
+ * Rebuilds nav.path from a remembered sequence of edge ids, rather than
+ * reconstructing an arbitrary (but equally valid) path from the FEN alone —
+ * reconstructPathTo can silently pick the *other* branch of a transposition,
+ * which looks like the line reverting a move or two even though the
+ * resulting position is correct. Stops at the first id that no longer forms
+ * a valid next step (e.g. deleted since) rather than discarding it all.
+ */
+function resolveStoredPath(edgeIds: string[], rootFen: string, edges: EdgeRow[]): EdgeRow[] {
+  const byId = new Map(edges.map((e) => [e.id, e]))
+  const path: EdgeRow[] = []
+  let cursor = rootFen
+  for (const id of edgeIds) {
+    const edge = byId.get(id)
+    if (!edge || edge.from_fen !== cursor) break
+    path.push(edge)
+    cursor = edge.to_fen
+  }
+  return path
+}
+
 function BuildSession({
   repertoire,
   initialFen,
@@ -977,6 +986,7 @@ function BuildSession({
   const [nav, setNav] = useState<NavState>({ path: [], future: [] })
   const [hasRestoredInitialFen, setHasRestoredInitialFen] = useState(false)
   const [lastMove, setLastMove] = useState<string | null>(null)
+  const [pgnCopied, setPgnCopied] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [explorerMoves, setExplorerMoves] = useState<ExplorerMove[] | null>(null)
   const [explorerLoading, setExplorerLoading] = useState(false)
@@ -1010,10 +1020,6 @@ function BuildSession({
   }, [repertoire.family_id])
 
   const position = nav.path.at(-1)?.to_fen ?? repertoire.root_fen
-  // Lets an async streamer fetch tell whether its result is still relevant
-  // once it resolves, without a per-call cancellation flag.
-  const positionRef = useRef(position)
-  positionRef.current = position
   const byFen = useMemo(() => groupByFromFen(edges ?? []), [edges])
   const choices = byFen.get(position) ?? []
   const rows = useMemo(() => buildMoveRows(nav.path), [nav.path])
@@ -1021,10 +1027,24 @@ function BuildSession({
   const opponentToMove = turn !== repertoire.training_color
 
   useEffect(() => {
-    if (!edges || !initialFen || hasRestoredInitialFen) return
-    setNav({ path: reconstructPathTo(initialFen, repertoire.root_fen, edges), future: [] })
+    if (!edges || hasRestoredInitialFen) return
+    const storedIds = readStoredPath(repertoire.id)
+    const path = storedIds
+      ? resolveStoredPath(storedIds, repertoire.root_fen, edges)
+      : initialFen
+        ? reconstructPathTo(initialFen, repertoire.root_fen, edges)
+        : []
+    setNav({ path, future: [] })
     setHasRestoredInitialFen(true)
-  }, [edges, initialFen, hasRestoredInitialFen, repertoire.root_fen])
+  }, [edges, initialFen, hasRestoredInitialFen, repertoire.id, repertoire.root_fen])
+
+  useEffect(() => {
+    if (!hasRestoredInitialFen) return // don't clobber the stored path before it's been read
+    writeStoredPath(
+      repertoire.id,
+      nav.path.map((e) => e.id),
+    )
+  }, [nav.path, hasRestoredInitialFen, repertoire.id])
 
   useEffect(() => {
     history.replaceState(null, '', buildHash(repertoire.id, position))
@@ -1105,58 +1125,44 @@ function BuildSession({
     }
   }, [position, opponentToMove])
 
-  /**
-   * Loads one streamer's moves for `fen`. Lichess results come from the
-   * move_stats cache unless `bypassCache` is set (the manual "Refresh"
-   * link) — see fetchLichessPlayerMoves. Uses positionRef rather than an
-   * effect-cleanup flag so a manual refresh's own in-flight request is
-   * guarded the same way as the automatic per-position fetch.
-   */
-  function loadStreamerMoves(player: TrackedPlayerRow, fen: string, color: Color, bypassCache: boolean) {
-    setStreamerLoading((prev) => ({ ...prev, [player.id]: true }))
-    setStreamerErrors((prev) => {
-      const next = { ...prev }
-      delete next[player.id]
-      return next
-    })
-    setStreamerMoves((prev) => {
-      const next = { ...prev }
-      delete next[player.id]
-      return next
-    })
-    const fetchMoves =
-      player.source === 'chess.com'
-        ? listMoveStatsBySource(statsSourceFor(player), fen).then(moveStatsToExplorerMoves)
-        : fetchLichessPlayerMoves(player, fen, color, bypassCache)
-    fetchMoves
-      .then((moves) => {
-        if (positionRef.current === fen) setStreamerMoves((prev) => ({ ...prev, [player.id]: moves }))
-      })
-      .catch((err) => {
-        if (positionRef.current === fen) {
-          setStreamerErrors((prev) => ({
-            ...prev,
-            [player.id]: err instanceof Error ? err.message : String(err),
-          }))
-        }
-      })
-      .finally(() => {
-        if (positionRef.current === fen) setStreamerLoading((prev) => ({ ...prev, [player.id]: false }))
-      })
-  }
-
   useEffect(() => {
     if (opponentToMove || trackedPlayers.length === 0) return
-    for (const player of trackedPlayers) {
-      loadStreamerMoves(player, position, turn, false)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadStreamerMoves closes over stable setters only
-  }, [position, opponentToMove, trackedPlayers, turn])
+    let cancelled = false
 
-  function handleRefreshStreamer(playerId: string) {
-    const player = trackedPlayers.find((p) => p.id === playerId)
-    if (player) loadStreamerMoves(player, position, turn, true)
-  }
+    for (const player of trackedPlayers) {
+      setStreamerLoading((prev) => ({ ...prev, [player.id]: true }))
+      setStreamerErrors((prev) => {
+        const next = { ...prev }
+        delete next[player.id]
+        return next
+      })
+      setStreamerMoves((prev) => {
+        const next = { ...prev }
+        delete next[player.id]
+        return next
+      })
+      listMoveStatsBySource(statsSourceFor(player), position)
+        .then(moveStatsToExplorerMoves)
+        .then((moves) => {
+          if (!cancelled) setStreamerMoves((prev) => ({ ...prev, [player.id]: moves }))
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setStreamerErrors((prev) => ({
+              ...prev,
+              [player.id]: err instanceof Error ? err.message : String(err),
+            }))
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setStreamerLoading((prev) => ({ ...prev, [player.id]: false }))
+        })
+    }
+
+    return () => {
+      cancelled = true
+    }
+  }, [position, opponentToMove, trackedPlayers])
 
   function handleToggleStreamer(playerId: string) {
     setExpandedStreamers((prev) => {
@@ -1241,6 +1247,21 @@ function BuildSession({
   }
 
   /** Plays a SAN move from the current position, saving it as a repertoire edge. */
+  async function handleCopyPgn() {
+    const pgnRows = rows.map((row) => ({
+      number: row.number,
+      white: row.white?.edge.san,
+      black: row.black?.edge.san,
+    }))
+    try {
+      await navigator.clipboard.writeText(buildPgn(repertoire.root_fen, pgnRows))
+      setPgnCopied(true)
+      setTimeout(() => setPgnCopied(false), 1500)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   function playMove(san: string): boolean {
     const chess = new Chess(position)
     let move
@@ -1336,7 +1357,6 @@ function BuildSession({
             streamers={streamers}
             expandedStreamers={expandedStreamers}
             onToggleStreamer={handleToggleStreamer}
-            onRefreshStreamer={handleRefreshStreamer}
             thresholdPercent={thresholdPercent}
             onSelectKnown={handleChoose}
             onSelectSuggestion={(san) => playMove(san)}
@@ -1358,6 +1378,14 @@ function BuildSession({
             boardOrientation: repertoire.training_color,
           }}
         />
+        <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
+          <button type="button" onClick={handleCopyPgn} style={linkButtonStyle}>
+            {pgnCopied ? 'Copied!' : 'Copy PGN'}
+          </button>
+          <a href={lichessAnalysisUrl(position)} target="_blank" rel="noreferrer" style={linkButtonStyle}>
+            Analyze on Lichess ↗
+          </a>
+        </div>
         <div style={{ minHeight: '3rem', marginTop: '0.5rem' }}>
           {error && <p style={{ color: 'crimson' }}>Couldn't save: {error}</p>}
           {!error && lastMove && <p>Saved {lastMove}</p>}
