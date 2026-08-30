@@ -29,6 +29,9 @@ jobs:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
           VITE_LICHESS_API_TOKEN: ${{ secrets.VITE_LICHESS_API_TOKEN }}
+          # The public deploy exposes Quiz mode only; Build/Settings/Debug
+          # stay available when running the app locally.
+          VITE_QUIZ_ONLY: 'true'
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

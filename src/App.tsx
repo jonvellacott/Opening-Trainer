@@ -11,9 +11,16 @@ import { SettingsView } from './views/SettingsView'
 
 type View = 'quiz' | 'build' | 'settings' | 'debug'
 
+// Set only in the GitHub Pages deploy workflow, never locally — the public
+// deployed site exposes just Quiz mode; Build/Settings/Debug stay available
+// when running the app yourself.
+const QUIZ_ONLY = import.meta.env.VITE_QUIZ_ONLY === 'true'
+
 function App() {
   // A bookmarked/refreshed Build deep link should land straight back in Build mode.
-  const [view, setView] = useState<View>(() => (parseBuildHash(window.location.hash) ? 'build' : 'quiz'))
+  const [view, setView] = useState<View>(() =>
+    !QUIZ_ONLY && parseBuildHash(window.location.hash) ? 'build' : 'quiz',
+  )
   const { session, loading } = useSession()
   const { familyId, loading: familyLoading, error: familyError } = useFamily(session)
 
@@ -40,18 +47,22 @@ function App() {
           borderBottom: '1px solid #ccc',
         }}
       >
-        <button type="button" onClick={() => setView('quiz')} disabled={view === 'quiz'}>
-          Quiz
-        </button>
-        <button type="button" onClick={() => setView('build')} disabled={view === 'build'}>
-          Build
-        </button>
-        <button type="button" onClick={() => setView('settings')} disabled={view === 'settings'}>
-          Settings
-        </button>
-        <button type="button" onClick={() => setView('debug')} disabled={view === 'debug'}>
-          Debug tree
-        </button>
+        {!QUIZ_ONLY && (
+          <>
+            <button type="button" onClick={() => setView('quiz')} disabled={view === 'quiz'}>
+              Quiz
+            </button>
+            <button type="button" onClick={() => setView('build')} disabled={view === 'build'}>
+              Build
+            </button>
+            <button type="button" onClick={() => setView('settings')} disabled={view === 'settings'}>
+              Settings
+            </button>
+            <button type="button" onClick={() => setView('debug')} disabled={view === 'debug'}>
+              Debug tree
+            </button>
+          </>
+        )}
         <span style={{ marginLeft: 'auto', fontSize: '0.85rem', color: '#666' }}>
           {session.user.email}
         </span>
@@ -59,10 +70,12 @@ function App() {
           Sign out
         </button>
       </nav>
-      {view === 'quiz' && familyId && <QuizView familyId={familyId} />}
-      {view === 'build' && familyId && <BuildView familyId={familyId} userId={session.user.id} />}
-      {view === 'settings' && familyId && <SettingsView familyId={familyId} />}
-      {view === 'debug' && <DebugImportView />}
+      {(QUIZ_ONLY || view === 'quiz') && familyId && <QuizView familyId={familyId} />}
+      {!QUIZ_ONLY && view === 'build' && familyId && (
+        <BuildView familyId={familyId} userId={session.user.id} />
+      )}
+      {!QUIZ_ONLY && view === 'settings' && familyId && <SettingsView familyId={familyId} />}
+      {!QUIZ_ONLY && view === 'debug' && <DebugImportView />}
     </div>
   )
 }
