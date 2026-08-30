@@ -186,17 +186,6 @@ function QuizRunner({
         alignItems: 'flex-start',
       }}
     >
-      <div style={{ flex: '1 1 220px' }}>
-        <CurrentLinePanel rows={rows} />
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', marginTop: '0.5rem' }}>
-          <button type="button" onClick={handleCopyPgn} style={linkButtonStyle}>
-            {pgnCopied ? 'Copied!' : 'Copy PGN'}
-          </button>
-          <a href={lichessAnalysisUrl(currentFen)} target="_blank" rel="noreferrer" style={linkButtonStyle}>
-            Analyze on Lichess ↗
-          </a>
-        </div>
-      </div>
       <div style={{ flex: '0 1 480px', minWidth: 0 }}>
         <p>
           {repertoire.name} ({repertoire.training_color}) — reps: {sessionStats.repsCompleted}{' '}
@@ -217,6 +206,17 @@ function QuizRunner({
             <p style={{ color: 'crimson' }}>✗ Not in your repertoire — try again</p>
           )}
           {isRepComplete && <p>Rep complete — starting a new one…</p>}
+        </div>
+      </div>
+      <div style={{ flex: '1 1 220px' }}>
+        <CurrentLinePanel rows={rows} />
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', marginTop: '0.5rem' }}>
+          <button type="button" onClick={handleCopyPgn} style={linkButtonStyle}>
+            {pgnCopied ? 'Copied!' : 'Copy PGN'}
+          </button>
+          <a href={lichessAnalysisUrl(currentFen)} target="_blank" rel="noreferrer" style={linkButtonStyle}>
+            Analyze on Lichess ↗
+          </a>
         </div>
       </div>
     </div>
