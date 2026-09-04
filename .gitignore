@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Vendored by scripts/copy-stockfish-engine.mjs — restored from node_modules on demand
+public/engine
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
