@@ -26,6 +26,7 @@ function initialState(): QuizState {
     path: [],
     lastOutcome: null,
     hadMistakeThisRep: false,
+    wrongAttempts: 0,
     sessionStats: { repsCompleted: 0, perfectReps: 0, mistakes: 0 },
   }
 }
@@ -96,13 +97,23 @@ describe('quizReducer', () => {
     expect(state.sessionStats.mistakes).toBe(1)
   })
 
+  it('counts consecutive wrong attempts and resets them on the next correct move', () => {
+    let state = quizReducer(initialState(), { type: 'SUBMIT_MOVE', san: 'd4' })
+    state = quizReducer(state, { type: 'SUBMIT_MOVE', san: 'Nf3' })
+    expect(state.wrongAttempts).toBe(2)
+
+    state = quizReducer(state, { type: 'SUBMIT_MOVE', san: 'e4' })
+    expect(state.wrongAttempts).toBe(0)
+  })
+
   it('START_REP resets to the root position', () => {
-    let state = quizReducer(initialState(), { type: 'SUBMIT_MOVE', san: 'e4' })
+    let state = quizReducer(initialState(), { type: 'SUBMIT_MOVE', san: 'd4' }) // mistake
     state = quizReducer(state, { type: 'START_REP' })
 
     expect(state.currentFen).toBe(ROOT)
     expect(state.path).toEqual([])
     expect(state.lastOutcome).toBeNull()
     expect(state.hadMistakeThisRep).toBe(false)
+    expect(state.wrongAttempts).toBe(0)
   })
 })

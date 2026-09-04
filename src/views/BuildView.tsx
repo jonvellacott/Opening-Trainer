@@ -1,17 +1,17 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Chess } from 'chess.js'
 import { Chessboard } from 'react-chessboard'
-import type { PieceDropHandlerArgs } from 'react-chessboard'
-import { colorToMove, normalizeFen, STANDARD_STARTING_FEN, uciToSan } from '../domain/chess'
+import type { Arrow, PieceDropHandlerArgs } from 'react-chessboard'
+import { applySanMove, colorToMove, normalizeFen, STANDARD_STARTING_FEN, uciToSan } from '../domain/chess'
 import { buildPgn } from '../domain/pgn'
 import type { Color } from '../domain/repertoire'
 import { buildHash, parseBuildHash } from '../lib/buildHash'
 import { getFamily } from '../lib/familiesRepo'
-import { fetchCloudEval } from '../lib/lichessCloudEval'
-import type { CloudEvalLine } from '../lib/lichessCloudEval'
 import { fetchExplorerMoves } from '../lib/lichessExplorer'
 import type { ExplorerMove } from '../lib/lichessExplorer'
+import { evaluatePosition, formatEval } from '../lib/localStockfish'
+import type { EngineLine } from '../lib/localStockfish'
 import { listMoveStatsBySource, moveStatsToExplorerMoves } from '../lib/moveStatsRepo'
 import {
   createRepertoire,
@@ -26,6 +26,7 @@ import {
 import type { EdgeRow, EdgeStatus, RepertoireRow } from '../lib/repertoireRepo'
 import { listTrackedPlayers, statsSourceFor } from '../lib/trackedPlayersRepo'
 import type { TrackedPlayerRow } from '../lib/trackedPlayersRepo'
+import { EvalBar } from './EvalBar'
 import { useClickToMove } from './useClickToMove'
 
 /** Used while the family's real setting is still loading. */
@@ -500,6 +501,28 @@ const BADGE_COLOR = {
   streamer: '#26a69a',
 } as const
 
+/** Arrows for moves already saved in the repertoire from the current position. */
+function buildKnownMoveArrows(choices: EdgeRow[], position: string): Arrow[] {
+  const arrows: Arrow[] = []
+  for (const edge of choices) {
+    if (edge.status === 'ignored') continue
+    const move = applySanMove(position, edge.san)
+    if (!move) continue
+    arrows.push({ startSquare: move.from, endSquare: move.to, color: BADGE_COLOR.known })
+  }
+  return arrows
+}
+
+const LAST_MOVE_ARROW_COLOR = 'rgba(170, 170, 170, 0.65)'
+
+/** A faint arrow for whichever move (yours or the opponent's) led to the current position. */
+function buildLastMoveArrow(lastEdge: EdgeRow | undefined): Arrow | null {
+  if (!lastEdge) return null
+  const move = applySanMove(lastEdge.from_fen, lastEdge.san)
+  if (!move) return null
+  return { startSquare: move.from, endSquare: move.to, color: LAST_MOVE_ARROW_COLOR }
+}
+
 function OpponentMoveTile({
   move,
   variant,
@@ -606,12 +629,18 @@ function OpponentMoves({
   )
 }
 
-function formatEval(line: CloudEvalLine): string {
-  if (line.mate !== undefined) {
-    return line.mate > 0 ? `#${line.mate}` : `-#${Math.abs(line.mate)}`
-  }
-  const pawns = (line.cp ?? 0) / 100
-  return pawns > 0 ? `+${pawns.toFixed(2)}` : pawns.toFixed(2)
+/** A single comparable number (white-relative), so mate scores still sort past any finite cp score. */
+function evalToComparable(line: EngineLine): number {
+  if (line.mate !== undefined) return line.mate > 0 ? 100000 - line.mate : -100000 - line.mate
+  return line.cp ?? 0
+}
+
+/** How many centipawns (white-relative) a played move gave up vs. the best move available before it. */
+const BLUNDER_CP_LOSS = 200
+
+interface MoveGrade {
+  line: EngineLine
+  isBad: boolean
 }
 
 interface EvalSuggestion {
@@ -622,7 +651,7 @@ interface EvalSuggestion {
 /** The first move of each engine line, as SAN, skipping ones already in the repertoire. */
 function buildEvalSuggestions(
   position: string,
-  lines: CloudEvalLine[],
+  lines: EngineLine[],
   knownSans: ReadonlySet<string>,
 ): EvalSuggestion[] {
   const seen = new Set<string>()
@@ -757,7 +786,7 @@ function PlayerMoves({
   mastersMoves: ExplorerMove[] | null
   mastersLoading: boolean
   mastersError: string | null
-  evalLines: CloudEvalLine[] | null
+  evalLines: EngineLine[] | null
   evalLoading: boolean
   evalError: string | null
   streamers: StreamerData[]
@@ -803,10 +832,10 @@ function PlayerMoves({
 
       <div style={{ marginBottom: '0.75rem' }}>
         <SectionHeading>Stockfish</SectionHeading>
-        {evalLoading && <p style={mutedNoteStyle}>Loading Stockfish eval…</p>}
+        {evalLoading && <p style={mutedNoteStyle}>Thinking…</p>}
         {evalError && <p style={mutedNoteStyle}>Couldn't load Stockfish eval: {evalError}</p>}
         {!evalLoading && !evalError && evalLines !== null && evalSuggestions.length === 0 && (
-          <p style={mutedNoteStyle}>No cached evaluation for this position.</p>
+          <p style={mutedNoteStyle}>No legal moves in this position.</p>
         )}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.25rem' }}>
           {evalSuggestions.map((s) => (
@@ -862,27 +891,20 @@ function PlayerMoves({
 
 function NavigationBar({
   canGoBack,
-  canGoForward,
   onBack,
-  onForward,
-  onRoot,
+  onBackAndDelete,
 }: {
   canGoBack: boolean
-  canGoForward: boolean
   onBack: () => void
-  onForward: () => void
-  onRoot: () => void
+  onBackAndDelete: () => void
 }) {
   return (
     <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
       <button type="button" onClick={onBack} disabled={!canGoBack}>
-        ← Previous
+        ← Back
       </button>
-      <button type="button" onClick={onRoot} disabled={!canGoBack}>
-        Opening Root
-      </button>
-      <button type="button" onClick={onForward} disabled={!canGoForward}>
-        Forward →
+      <button type="button" onClick={onBackAndDelete} disabled={!canGoBack}>
+        ← Back & Delete
       </button>
     </div>
   )
@@ -890,7 +912,6 @@ function NavigationBar({
 
 interface NavState {
   path: EdgeRow[]
-  future: EdgeRow[]
 }
 
 /**
@@ -983,7 +1004,7 @@ function BuildSession({
   initialFen?: string | null
 }) {
   const [edges, setEdges] = useState<EdgeRow[] | null>(null)
-  const [nav, setNav] = useState<NavState>({ path: [], future: [] })
+  const [nav, setNav] = useState<NavState>({ path: [] })
   const [hasRestoredInitialFen, setHasRestoredInitialFen] = useState(false)
   const [lastMove, setLastMove] = useState<string | null>(null)
   const [pgnCopied, setPgnCopied] = useState(false)
@@ -994,9 +1015,16 @@ function BuildSession({
   const [mastersMoves, setMastersMoves] = useState<ExplorerMove[] | null>(null)
   const [mastersLoading, setMastersLoading] = useState(false)
   const [mastersError, setMastersError] = useState<string | null>(null)
-  const [evalLines, setEvalLines] = useState<CloudEvalLine[] | null>(null)
+  const [evalLines, setEvalLines] = useState<EngineLine[] | null>(null)
   const [evalLoading, setEvalLoading] = useState(false)
   const [evalError, setEvalError] = useState<string | null>(null)
+  const [moveGrade, setMoveGrade] = useState<MoveGrade | null>(null)
+  // Holds the last non-null eval so the bar doesn't flash back to neutral
+  // every time a new search kicks off — it just sits still until one lands.
+  const [displayedEvalLine, setDisplayedEvalLine] = useState<EngineLine | null>(null)
+  // The most recent successfully-loaded eval, so a just-played move can be graded
+  // against it without re-running the search for the position it was played from.
+  const lastEvalRef = useRef<{ fen: string; lines: EngineLine[] } | null>(null)
   const [trackedPlayers, setTrackedPlayers] = useState<TrackedPlayerRow[]>([])
   const [streamerMoves, setStreamerMoves] = useState<Record<string, ExplorerMove[]>>({})
   const [streamerLoading, setStreamerLoading] = useState<Record<string, boolean>>({})
@@ -1025,6 +1053,22 @@ function BuildSession({
   const rows = useMemo(() => buildMoveRows(nav.path), [nav.path])
   const turn = useMemo(() => colorToMove(position), [position])
   const opponentToMove = turn !== repertoire.training_color
+  const currentEvalLine = opponentToMove ? (moveGrade?.line ?? null) : (evalLines?.[0] ?? null)
+
+  useEffect(() => {
+    if (currentEvalLine) setDisplayedEvalLine(currentEvalLine)
+  }, [currentEvalLine])
+
+  // Only the opponent's move gets an arrow — once it's the opponent's turn
+  // again, the last path edge is your own move, so no arrow.
+  const lastMoveArrow = useMemo(
+    () => (opponentToMove ? null : buildLastMoveArrow(nav.path.at(-1))),
+    [nav.path, opponentToMove],
+  )
+  const arrows = useMemo(() => {
+    const known = buildKnownMoveArrows(choices, position)
+    return lastMoveArrow ? [...known, lastMoveArrow] : known
+  }, [choices, position, lastMoveArrow])
 
   useEffect(() => {
     if (!edges || hasRestoredInitialFen) return
@@ -1034,7 +1078,7 @@ function BuildSession({
       : initialFen
         ? reconstructPathTo(initialFen, repertoire.root_fen, edges)
         : []
-    setNav({ path, future: [] })
+    setNav({ path })
     setHasRestoredInitialFen(true)
   }, [edges, initialFen, hasRestoredInitialFen, repertoire.id, repertoire.root_fen])
 
@@ -1110,9 +1154,11 @@ function BuildSession({
     setEvalLines(null)
     setEvalLoading(true)
     setEvalError(null)
-    fetchCloudEval(position)
+    evaluatePosition(position)
       .then((lines) => {
-        if (!cancelled) setEvalLines(lines)
+        if (cancelled) return
+        setEvalLines(lines)
+        lastEvalRef.current = { fen: position, lines }
       })
       .catch((err) => {
         if (!cancelled) setEvalError(err instanceof Error ? err.message : String(err))
@@ -1124,6 +1170,39 @@ function BuildSession({
       cancelled = true
     }
   }, [position, opponentToMove])
+
+  useEffect(() => {
+    const edge = nav.path.at(-1)
+    const cached = edge ? lastEvalRef.current : null
+    if (!edge || colorToMove(edge.from_fen) !== repertoire.training_color || !cached || cached.fen !== edge.from_fen) {
+      setMoveGrade(null)
+      return
+    }
+    const bestBefore = cached.lines[0]
+    if (!bestBefore) {
+      setMoveGrade(null)
+      return
+    }
+    let cancelled = false
+    setMoveGrade(null)
+    evaluatePosition(edge.to_fen)
+      .then((afterLines) => {
+        if (cancelled) return
+        const bestAfter = afterLines[0]
+        if (!bestAfter) return
+        const moverIsWhite = colorToMove(edge.from_fen) === 'white'
+        const cpLoss = moverIsWhite
+          ? evalToComparable(bestBefore) - evalToComparable(bestAfter)
+          : evalToComparable(bestAfter) - evalToComparable(bestBefore)
+        setMoveGrade({ line: bestAfter, isBad: cpLoss >= BLUNDER_CP_LOSS })
+      })
+      .catch(() => {
+        if (!cancelled) setMoveGrade(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [nav.path, repertoire.training_color])
 
   useEffect(() => {
     if (opponentToMove || trackedPlayers.length === 0) return
@@ -1176,21 +1255,8 @@ function BuildSession({
   function handleBack() {
     setNav((prev) => {
       if (prev.path.length === 0) return prev
-      const last = prev.path[prev.path.length - 1]
-      return { path: prev.path.slice(0, -1), future: [last, ...prev.future] }
+      return { path: prev.path.slice(0, -1) }
     })
-  }
-
-  function handleForward() {
-    setNav((prev) => {
-      if (prev.future.length === 0) return prev
-      const [next, ...rest] = prev.future
-      return { path: [...prev.path, next], future: rest }
-    })
-  }
-
-  function handleRoot() {
-    setNav({ path: [], future: [] })
   }
 
   useEffect(() => {
@@ -1207,16 +1273,13 @@ function BuildSession({
   function handleChoose(edge: EdgeRow) {
     setLastMove(null)
     setError(null)
-    setNav((prev) => ({ path: [...prev.path, edge], future: [] }))
+    setNav((prev) => ({ path: [...prev.path, edge] }))
   }
 
   function handleJump(index: number) {
     setLastMove(null)
     setError(null)
-    setNav((prev) => {
-      const removed = prev.path.slice(index + 1)
-      return { path: prev.path.slice(0, index + 1), future: [...removed, ...prev.future] }
-    })
+    setNav((prev) => ({ path: prev.path.slice(0, index + 1) }))
   }
 
   function handleToggleHide(edge: EdgeRow) {
@@ -1242,6 +1305,27 @@ function BuildSession({
     deleteEdges(ids)
       .then(() => {
         setEdges((prev) => (prev ?? []).filter((e) => !ids.includes(e.id)))
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+  }
+
+  /** Steps back one move and deletes it (and anything now-orphaned after it) from the repertoire. */
+  function handleBackAndDelete() {
+    const edge = nav.path.at(-1)
+    if (!edge) return
+    const ids = collectDeletionIds(edge, edges ?? [])
+    if (ids.length > 1) {
+      const extra = ids.length - 1
+      const ok = window.confirm(
+        `Go back and delete "${edge.san}" and ${extra} move${extra === 1 ? '' : 's'} that follow it? This can't be undone.`,
+      )
+      if (!ok) return
+    }
+    setError(null)
+    deleteEdges(ids)
+      .then(() => {
+        setEdges((prev) => (prev ?? []).filter((e) => !ids.includes(e.id)))
+        setNav((prev) => ({ path: prev.path.slice(0, -1) }))
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
   }
@@ -1281,7 +1365,7 @@ function BuildSession({
           const withoutStale = (prev ?? []).filter((e) => e.id !== saved.id)
           return [...withoutStale, saved]
         })
-        setNav((prev) => ({ path: [...prev.path, saved], future: [] }))
+        setNav((prev) => ({ path: [...prev.path, saved] }))
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
 
@@ -1326,10 +1410,8 @@ function BuildSession({
         <CurrentLinePanel rows={rows} currentIndex={nav.path.length - 1} onJump={handleJump} />
         <NavigationBar
           canGoBack={nav.path.length > 0}
-          canGoForward={nav.future.length > 0}
           onBack={handleBack}
-          onForward={handleForward}
-          onRoot={handleRoot}
+          onBackAndDelete={handleBackAndDelete}
         />
         <CurrentPositionBanner turn={turn} />
         {opponentToMove ? (
@@ -1365,19 +1447,25 @@ function BuildSession({
           />
         )}
       </div>
-      <div style={{ width: 480, flexShrink: 0 }}>
+      <div style={{ width: 506, flexShrink: 0 }}>
         <p>
           {repertoire.name} ({repertoire.training_color})
         </p>
-        <Chessboard
-          options={{
-            position,
-            onPieceDrop,
-            onSquareClick,
-            squareStyles,
-            boardOrientation: repertoire.training_color,
-          }}
-        />
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'stretch' }}>
+          <EvalBar line={displayedEvalLine} boardOrientation={repertoire.training_color} isBad={moveGrade?.isBad} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Chessboard
+              options={{
+                position,
+                onPieceDrop,
+                onSquareClick,
+                squareStyles,
+                boardOrientation: repertoire.training_color,
+                arrows,
+              }}
+            />
+          </div>
+        </div>
         <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
           <button type="button" onClick={handleCopyPgn} style={linkButtonStyle}>
             {pgnCopied ? 'Copied!' : 'Copy PGN'}
@@ -1402,17 +1490,28 @@ export function BuildView({ familyId, userId }: { familyId: string; userId: stri
   // picker should render immediately, same as before this feature existed.
   const [restoring, setRestoring] = useState(() => parseBuildHash(window.location.hash) !== null)
   const [restoreError, setRestoreError] = useState<string | null>(null)
+  // Bumped on every bookmark load (initial and pasted-while-open) and used as
+  // BuildSession's key, so pasting a link into an already-open tab remounts
+  // it fresh at the new position instead of being ignored after the first load.
+  const [linkVersion, setLinkVersion] = useState(0)
 
   useEffect(() => {
-    const bookmark = parseBuildHash(window.location.hash)
-    if (!bookmark) return
-    getRepertoire(bookmark.repertoireId)
-      .then((r) => {
-        setRepertoire(r)
-        setInitialFen(bookmark.fen)
-      })
-      .catch((err) => setRestoreError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setRestoring(false))
+    function loadFromHash() {
+      const bookmark = parseBuildHash(window.location.hash)
+      if (!bookmark) return
+      setRestoring(true)
+      getRepertoire(bookmark.repertoireId)
+        .then((r) => {
+          setRepertoire(r)
+          setInitialFen(bookmark.fen)
+          setLinkVersion((v) => v + 1)
+        })
+        .catch((err) => setRestoreError(err instanceof Error ? err.message : String(err)))
+        .finally(() => setRestoring(false))
+    }
+    loadFromHash()
+    window.addEventListener('hashchange', loadFromHash)
+    return () => window.removeEventListener('hashchange', loadFromHash)
   }, [])
 
   if (restoring) {
@@ -1432,5 +1531,5 @@ export function BuildView({ familyId, userId }: { familyId: string; userId: stri
     )
   }
 
-  return <BuildSession repertoire={repertoire} initialFen={initialFen} />
+  return <BuildSession key={linkVersion} repertoire={repertoire} initialFen={initialFen} />
 }

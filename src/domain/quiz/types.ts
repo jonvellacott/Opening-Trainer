@@ -28,6 +28,8 @@ export interface QuizState {
   path: RepertoireEdge[]
   lastOutcome: 'correct' | 'wrong' | null
   hadMistakeThisRep: boolean
+  /** Consecutive wrong attempts on the current move, reset whenever it advances. */
+  wrongAttempts: number
   sessionStats: SessionStats
 }
 

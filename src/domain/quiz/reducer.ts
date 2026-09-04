@@ -15,6 +15,7 @@ export function quizReducer(state: QuizState, action: QuizAction): QuizState {
         path: [],
         lastOutcome: null,
         hadMistakeThisRep: false,
+        wrongAttempts: 0,
       }
     }
 
@@ -30,6 +31,7 @@ export function quizReducer(state: QuizState, action: QuizAction): QuizState {
           ...state,
           lastOutcome: 'wrong',
           hadMistakeThisRep: true,
+          wrongAttempts: state.wrongAttempts + 1,
           sessionStats: { ...state.sessionStats, mistakes: state.sessionStats.mistakes + 1 },
         }
       }
@@ -48,6 +50,7 @@ function advanceTo(state: QuizState, edge: RepertoireEdge): QuizState {
     currentFen: edge.toFen,
     path: [...state.path, edge],
     lastOutcome: 'correct',
+    wrongAttempts: 0,
     sessionStats: isLeaf
       ? {
           repsCompleted: state.sessionStats.repsCompleted + 1,

@@ -2,17 +2,23 @@ import { useEffect, useReducer, useState } from 'react'
 import { Chess } from 'chess.js'
 import { Chessboard } from 'react-chessboard'
 import type { PieceDropHandlerArgs } from 'react-chessboard'
-import { colorToMove } from '../domain/chess'
+import type { Arrow } from 'react-chessboard'
+import { applySanMove, colorToMove } from '../domain/chess'
 import { buildPgn } from '../domain/pgn'
 import type { MoveRow } from '../domain/pgn'
 import { findMatchingChild, getChildren, nextMoveColor, quizReducer } from '../domain/quiz'
 import type { QuizState, RepertoireEdge } from '../domain/quiz'
+import { buildHash } from '../lib/buildHash'
+import { evaluatePosition } from '../lib/localStockfish'
+import type { EngineLine } from '../lib/localStockfish'
 import { listEdges, listRepertoires } from '../lib/repertoireRepo'
 import type { EdgeRow, RepertoireRow } from '../lib/repertoireRepo'
+import { EvalBar } from './EvalBar'
 import { useClickToMove } from './useClickToMove'
 
 const REP_COMPLETE_DELAY_MS = 1200
 const AUTO_MOVE_DELAY_MS = 500
+const HINT_AFTER_WRONG_ATTEMPTS = 5
 
 const linkButtonStyle = {
   border: 'none',
@@ -32,6 +38,28 @@ const linkButtonStyle = {
  */
 function lichessAnalysisUrl(fen: string): string {
   return `https://lichess.org/analysis/${fen.replaceAll(' ', '_')}`
+}
+
+/**
+ * Build mode is stripped from the public GitHub Pages deploy (Quiz-only), so
+ * this always points at a locally-run dev server regardless of where the
+ * Quiz page itself is being viewed from — copy it, then paste into a tab
+ * running `npm run dev` locally.
+ */
+const LOCAL_BUILDER_ORIGIN = 'http://localhost:5173/Opening-Trainer/'
+
+function builderDeepLink(repertoireId: string, fen: string): string {
+  return `${LOCAL_BUILDER_ORIGIN}${buildHash(repertoireId, fen)}`
+}
+
+const LAST_MOVE_ARROW_COLOR = 'rgba(170, 170, 170, 0.65)'
+
+/** A faint arrow for whichever move (yours or the opponent's) led to the current position. */
+function buildLastMoveArrow(lastEdge: RepertoireEdge | undefined): Arrow | null {
+  if (!lastEdge) return null
+  const move = applySanMove(lastEdge.fromFen, lastEdge.san)
+  if (!move) return null
+  return { startSquare: move.from, endSquare: move.to, color: LAST_MOVE_ARROW_COLOR }
 }
 
 function randomIndex(length: number): number {
@@ -56,6 +84,7 @@ function initialQuizState(repertoire: RepertoireRow, edges: RepertoireEdge[]): Q
     path: [],
     lastOutcome: null,
     hadMistakeThisRep: false,
+    wrongAttempts: 0,
     sessionStats: { repsCompleted: 0, perfectReps: 0, mistakes: 0 },
   }
 }
@@ -122,11 +151,34 @@ function QuizRunner({
   )
   const { currentFen, sessionStats } = state
   const [pgnCopied, setPgnCopied] = useState(false)
+  const [builderLinkCopied, setBuilderLinkCopied] = useState(false)
   const rows = buildMoveRows(state.path)
 
   const nextColor = nextMoveColor(state.edges, currentFen)
   const isTraineesTurn = nextColor === repertoire.training_color
   const isRepComplete = nextColor === null
+  // Only the opponent's move gets an arrow, not your own.
+  const lastEdge = state.path.at(-1)
+  const lastMoveArrow =
+    lastEdge && colorToMove(lastEdge.fromFen) !== repertoire.training_color
+      ? buildLastMoveArrow(lastEdge)
+      : null
+
+  const [evalLine, setEvalLine] = useState<EngineLine | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    evaluatePosition(currentFen)
+      .then((lines) => {
+        if (!cancelled && lines[0]) setEvalLine(lines[0])
+      })
+      .catch(() => {
+        // keep showing the last known eval rather than clearing it on a transient failure
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [currentFen])
 
   // Auto-play the opponent's move, or start the next rep once this one ends.
   useEffect(() => {
@@ -159,6 +211,13 @@ function QuizRunner({
 
   const { squareStyles, onSquareClick } = useClickToMove(currentFen, attemptMove, isTraineesTurn)
 
+  const showHint = isTraineesTurn && state.wrongAttempts >= HINT_AFTER_WRONG_ATTEMPTS
+  const hintSquare = showHint ? getChildren(state.edges, currentFen)[0] : undefined
+  const hintFrom = hintSquare && applySanMove(currentFen, hintSquare.san)?.from
+  const boardSquareStyles = hintFrom
+    ? { ...squareStyles, [hintFrom]: { ...squareStyles[hintFrom], backgroundColor: 'rgba(46, 204, 113, 0.6)' } }
+    : squareStyles
+
   function onPieceDrop({ sourceSquare, targetSquare }: PieceDropHandlerArgs): boolean {
     if (!isTraineesTurn || !targetSquare) return false
     return attemptMove(sourceSquare, targetSquare)
@@ -169,6 +228,16 @@ function QuizRunner({
       await navigator.clipboard.writeText(buildPgn(repertoire.root_fen, rows))
       setPgnCopied(true)
       setTimeout(() => setPgnCopied(false), 1500)
+    } catch {
+      // clipboard access can fail (permissions, insecure context) — not worth surfacing as a training error
+    }
+  }
+
+  async function handleCopyBuilderLink() {
+    try {
+      await navigator.clipboard.writeText(builderDeepLink(repertoire.id, currentFen))
+      setBuilderLinkCopied(true)
+      setTimeout(() => setBuilderLinkCopied(false), 1500)
     } catch {
       // clipboard access can fail (permissions, insecure context) — not worth surfacing as a training error
     }
@@ -186,21 +255,27 @@ function QuizRunner({
         alignItems: 'flex-start',
       }}
     >
-      <div style={{ flex: '0 1 480px', minWidth: 0 }}>
+      <div style={{ flex: '0 1 506px', minWidth: 0 }}>
         <p>
           {repertoire.name} ({repertoire.training_color}) — reps: {sessionStats.repsCompleted}{' '}
           (perfect: {sessionStats.perfectReps}, mistakes: {sessionStats.mistakes})
         </p>
-        <Chessboard
-          options={{
-            position: currentFen,
-            onPieceDrop,
-            onSquareClick,
-            squareStyles,
-            boardOrientation: repertoire.training_color,
-            allowDragging: isTraineesTurn,
-          }}
-        />
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'stretch' }}>
+          <EvalBar line={evalLine} boardOrientation={repertoire.training_color} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Chessboard
+              options={{
+                position: currentFen,
+                onPieceDrop,
+                onSquareClick,
+                squareStyles: boardSquareStyles,
+                boardOrientation: repertoire.training_color,
+                allowDragging: isTraineesTurn,
+                arrows: lastMoveArrow ? [lastMoveArrow] : [],
+              }}
+            />
+          </div>
+        </div>
         <div style={{ minHeight: '3rem', marginTop: '0.5rem' }}>
           {state.lastOutcome === 'wrong' && (
             <p style={{ color: 'crimson' }}>✗ Not in your repertoire — try again</p>
@@ -217,6 +292,9 @@ function QuizRunner({
           <a href={lichessAnalysisUrl(currentFen)} target="_blank" rel="noreferrer" style={linkButtonStyle}>
             Analyze on Lichess ↗
           </a>
+          <button type="button" onClick={handleCopyBuilderLink} style={linkButtonStyle}>
+            {builderLinkCopied ? 'Copied!' : 'Copy Builder Link'}
+          </button>
         </div>
       </div>
     </div>
